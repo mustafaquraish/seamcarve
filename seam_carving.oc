@@ -7,52 +7,88 @@ import std::video_renderer::VideoRenderer
 
 @compiler c_flag "-O3"
 
+let opt_inverse_energy: bool = false
+
 def idx(img: &Image, x:u32, y:u32): u32 => img.width * y + x
 
-const K_SIZE: u32 = 3 
-let GX: [[f32; K_SIZE]; K_SIZE]
-let GY: [[f32; K_SIZE]; K_SIZE]
+def abs_sub(a: u32, b: u32): u32 => if a > b then a - b else b - a
 
-def convolve(img: &Image, px: u32, py: u32, filter: &[f32; K_SIZE]): f32 {
-    let sum = 0.0
-    for let i = 0; i < K_SIZE; ++i {
-        for let j = 0; j < K_SIZE; ++j {
-            let xi: i32 = (px + i) as i32 - (K_SIZE/2) as i32
-            let yi: i32 = (py + j) as i32 - (K_SIZE/2) as i32
-
-            let x = 0
-            if xi > 0 then x = xi as u32
-            if x >= img.width then x = img.width - 1
-
-            let y = 0
-            if yi > 0 then y = yi as u32
-            if y >= img.height then y = img.height - 1
-
-            let col = img.get(x as u32, y as u32)
-            let f = (col.r as f32 + col.g as f32 + col.b as f32) / 3.0
-            sum += filter[i][j] * f
-        }
-    }
-    return sum
+def set_options(inverse_energy: bool) {
+    opt_inverse_energy = inverse_energy
 }
 
-def sobel(img: &Image): &Image {
+def get_energy(img: &Image, mask: &Image): &Image {
     let out = Image::new(img.width, img.height)
-    for let y = 0; y < img.height; ++y {
-        for let x = 0; x < img.width; ++x {
-            let gx = convolve(img, x, y, GX)
-            let gy = convolve(img, x, y, GY)
-            let g = (gx*gx + gy*gy).sqrt()
-            if g > 255.0 { g = 255.0 }
-            if g < 0.0 { g = 0.0 }
-            let col = Color(g as u8, g as u8, g as u8)
-            out.set(x, y, col)
+
+    let m = std::new<u32>(img.width * img.height) as &[u32; img.width]
+    let energy = std::new<u32>(img.width * img.height) as &[u32; img.width]
+    let I = std::new<u32>(img.width * img.height) as &[u32; img.width]
+    defer std::libc::free(m)
+    defer std::libc::free(energy)
+    defer std::libc::free(I)
+
+    for let i = 0; i < img.height; ++i {
+        for let j = 0; j < img.width; ++j {
+            let col = img.get(j, i)
+            let r = col.r as u32
+            let g = col.g as u32
+            let b = col.b as u32
+            I[i][j] = (r + g + b) / 3
         }
     }
+
+    let cULR: [u32; 3]
+    let mULR: [u32; 3]
+
+    for let i = 1; i < img.height; ++i {
+        for let j = 0; j < img.width; ++j {
+            let up = (i+img.height-1) %img.height
+            let down = (i+1) % img.height
+            let left = (j+img.width-1) % img.width
+            let right = (j+1) % img.width
+    
+            cULR[0] = abs_sub(I[i][right], I[i][left])
+            cULR[1] = abs_sub(I[up][j], I[i][left]) + cULR[0]
+            cULR[2] = abs_sub(I[up][j], I[i][right]) + cULR[0]
+            
+            mULR[0] = m[up][j] + cULR[0]
+            mULR[1] = m[up][left] + cULR[1]
+            mULR[2] = m[up][right] + cULR[2]
+                
+            let a_min = 0
+            let v_min = mULR[0]
+            if mULR[1] < v_min { a_min = 1; v_min = mULR[1]; }
+            if mULR[2] < v_min { a_min = 2; v_min = mULR[2]; }
+
+            m[i][j] = v_min
+            energy[i][j] = cULR[a_min]
+        }
+    }
+
+    for let i = 0; i < img.height; ++i {
+        for let j = 0; j < img.width; ++j {
+            let e = energy[i][j]
+            if opt_inverse_energy then e = 255 - e
+
+            let col = Color(e as u8, e as u8, e as u8)
+            out.set(j, i, col)
+
+            if mask? {
+                let col = mask.get(j, i)
+                if col.r > 128 {  // Some arbitrary threshold
+                    out.set(j, i, Color(0, 255, 0))
+                } else if col.r < 128 {
+                    out.set(j, i, Color(255, 0, 0))
+                }
+            }
+        }
+    }
+
     return out
 }
 
-def dp_get(dp: &u32, img: &Image, x: u32, y: u32): u32 {
+
+def dp_get(dp: &i32, img: &Image, x: u32, y: u32): i32 {
     assert x < img.width and y < img.height
     return dp[idx(img, x, y)]
 }
@@ -60,7 +96,7 @@ def dp_get(dp: &u32, img: &Image, x: u32, y: u32): u32 {
 def find_minimum_seam(img: &Image): &Vector<u32> {
     let seam = Vector<u32>::new()
 
-    let dp = std::new<u32>(img.width * img.height)
+    let dp = std::new<i32>(img.width * img.height)
     let backtrack = std::new<u32>(img.width * img.height)
     defer std::libc::free(dp)
     defer std::libc::free(backtrack)
@@ -68,7 +104,16 @@ def find_minimum_seam(img: &Image): &Vector<u32> {
     for let i = 1; i < img.height; ++i {
         for let j = 0; j < img.width; ++j {
             let ix = idx(img, j, i)
-            dp[ix] = img.get(j, i).r as u32
+            let col = img.get(j, i)
+
+            dp[ix] = img.get(j, i).g as i32
+            if not (col.r == col.g == col.b) {
+                if col.r > 0 {
+                    dp[ix] = -10000
+                } else if col.g > 0 {
+                    dp[ix] = 10000
+                }
+            }
         }   
     }
 
@@ -131,14 +176,46 @@ def delete_seam(img: &Image, seam: &Vector<u32>): &Image {
     return out
 }
 
-def init_seam_carve() {
-    GX[0][0] = 1.0; GX[0][1] = 0.0; GX[0][2] = -1.0
-    GX[1][0] = 2.0; GX[1][1] = 0.0; GX[1][2] = -2.0
-    GX[2][0] = 1.0; GX[2][1] = 0.0; GX[2][2] = -1.0
+def add_seam(img: &Image, seam: &Vector<u32>): &Image {
+    let out = Image::new(img.width + 1, img.height)
+    for let y = 0; y < img.height; ++y {
+        let seam_x = seam.at(img.height - y - 1)
+        let out_x = 0
+        for let x = 0; x < img.width; ++x {
 
-    GY[0][0] =  1.0; GY[0][1] =  2.0; GY[0][2] =  1.0
-    GY[1][0] =  0.0; GY[1][1] =  0.0; GY[1][2] =  0.0
-    GY[2][0] = -1.0; GY[2][1] = -2.0; GY[2][2] = -1.0
+            if x == seam_x then { 
+                let r = 0
+                let g = 0
+                let b = 0
+
+                let j0 = x
+                if x > 0 then j0 -= 1
+
+                let j1 = j0 + 1
+                if j1 < img.width - 1 then j1 += 1
+
+                for let j = j0; j < j1; ++j {
+                    let col = img.get(j, y)
+                    r += col.r as u32
+                    g += col.g as u32
+                    b += col.b as u32
+                }
+
+                r /= (j1 - j0) as u32
+                g /= (j1 - j0) as u32
+                b /= (j1 - j0) as u32
+
+                let col = Color(r as u8, g as u8, b as u8)
+                out.set(out_x, y, col)
+                out_x += 1
+            }
+
+            let col = img.get(x, y)
+            out.set(out_x, y, col)
+            out_x += 1
+        }
+    }
+    return out
 }
 
 def draw_seam_on_image(img: &Image, seam: &Vector<u32>) {
@@ -149,55 +226,90 @@ def draw_seam_on_image(img: &Image, seam: &Vector<u32>) {
     }
 }
 
-enum SeamDirection {
+enum Direction {
     Horizontal
     Vertical
 }
 
-def render_image(dir: SeamDirection, img: &Image, renderer: &VideoRenderer) {
+def render_image(dir: Direction, img: &Image, renderer: &VideoRenderer) {
     if not renderer? then return
 
     match dir {
-        Horizontal => {
+        Vertical => {
             let tmp = img.rotate(CounterClockwise)
             renderer.send_frame(tmp)
             tmp.free()
         }
-        Vertical => {
+        Horizontal => {
             renderer.send_frame(img)
         }
     }
 }
 
-def remove_the_seams(dir: SeamDirection, img_orig: &Image, num_seams: u32, show_seams: bool, renderer: &VideoRenderer = null): &Image {
-    let img = match dir {
-        Vertical => img_orig,
-        Horizontal => {
-            let new = img_orig.rotate(Clockwise)
-            img_orig.free()
-            yield new
+def add_the_seams(dir: Direction, img_orig: &Image, mask_orig: &Image, num_seams: u32, show_seams: bool, renderer: &VideoRenderer = null): &Image {
+    let img = img_orig
+    let mask = mask_orig
+
+    if dir == Vertical {
+        img = img_orig.rotate(Clockwise)
+        img_orig.free()
+
+        if mask_orig? then {
+            mask = mask_orig.rotate(Clockwise)
+            mask_orig.free()
         }
     }
+    let tmp_img = img.copy()
+
+    let seams_list = Vector<&Vector<u32>>::new()
     for let i = 0; i < num_seams; ++i {
-        let out = sobel(img)
+        let out = get_energy(tmp_img, mask)
         let seam = find_minimum_seam(out)
+        seams_list.push(seam)
         out.free()
 
-        if show_seams then draw_seam_on_image(img, seam)
+        draw_seam_on_image(tmp_img, seam)
+        render_image(dir, tmp_img, renderer)
 
-        render_image(dir, img, renderer)
+        let seamless_img = delete_seam(tmp_img, seam)
+        tmp_img.free()
+        tmp_img = seamless_img
 
-        let seamless = delete_seam(img, seam)
-        img.free()
-        seam.free()
-        img = seamless
+        if mask? {
+            let seamless_mask = delete_seam(mask, seam)
+            mask.free()
+            mask = seamless_mask
+        }
     }
+
+    tmp_img.free()
+
+    for let i = 0; i < seams_list.size; ++i {
+        let seam = seams_list.at(i)
+        let new_img = add_seam(img, seam)
+        draw_seam_on_image(img, seam)
+        render_image(dir, img, renderer)
+        img.free()
+        img = new_img
+
+        for let j = i+1; j < seams_list.size; ++j {
+            let other_seam = seams_list.at(j)
+            for let k = 0; k < other_seam.size; ++k {
+                if other_seam.at(k) >= seam.at(k) then {
+                    other_seam.data[k] += 2
+                }
+            }
+        }
+        seam.free()
+    }
+
+    seams_list.free()
 
     render_image(dir, img, renderer)
 
     return match dir {
-        Vertical => img,
-        Horizontal => {
+        Horizontal => img,
+        Vertical => {
             let new = img.rotate(CounterClockwise)
             img.free()
             yield new
@@ -205,13 +317,71 @@ def remove_the_seams(dir: SeamDirection, img_orig: &Image, num_seams: u32, show_
     }
 }
 
-def remove_the_seams_and_make_it_fun(dir: SeamDirection, img_orig: &Image, num_seams: u32, show_seams: bool, renderer: &VideoRenderer = null): &Image {
-    let img = match dir {
-        Vertical => img_orig,
-        Horizontal => {
-            let new = img_orig.rotate(Clockwise)
-            img_orig.free()
+def remove_the_seams(dir: Direction, img_orig: &Image, mask_orig: &Image, num_seams: u32, show_seams: bool, explain: bool, renderer: &VideoRenderer = null): &Image {
+    let img = img_orig
+    let mask = mask_orig
+
+    if dir == Vertical {
+        img = img_orig.rotate(Clockwise)
+        img_orig.free()
+
+        if mask_orig? then {
+            mask = mask_orig.rotate(Clockwise)
+            mask_orig.free()
+        }
+    }
+    for let i = 0; i < num_seams; ++i {
+        let out = get_energy(img, mask)
+        let seam = find_minimum_seam(out)
+
+        if explain {
+            draw_seam_on_image(out, seam)
+            render_image(dir, out, renderer)
+
+        } else {
+            if show_seams then draw_seam_on_image(img, seam)
+            render_image(dir, img, renderer)
+        }
+        out.free()
+
+        let seamless_img = delete_seam(img, seam)
+        img.free()
+        img = seamless_img
+
+        if mask? {
+            let seamless_mask = delete_seam(mask, seam)
+            mask.free()
+            mask = seamless_mask
+        }
+
+        seam.free()
+    }
+
+    render_image(dir, img, renderer)
+
+    if mask? then mask.free()
+
+    return match dir {
+        Horizontal => img,
+        Vertical => {
+            let new = img.rotate(CounterClockwise)
+            img.free()
             yield new
+        }
+    }
+}
+
+def remove_the_seams_and_make_it_fun(dir: Direction, img_orig: &Image, mask_orig: &Image, num_seams: u32, show_seams: bool, renderer: &VideoRenderer = null): &Image {
+    let img = img_orig
+    let mask = mask_orig
+
+    if dir == Vertical {
+        img = img_orig.rotate(Clockwise)
+        img_orig.free()
+
+        if mask_orig? then {
+            mask = mask_orig.rotate(Clockwise)
+            mask_orig.free()
         }
     }
     
@@ -221,7 +391,7 @@ def remove_the_seams_and_make_it_fun(dir: SeamDirection, img_orig: &Image, num_s
     let counter = 0
 
     for let i = 0; i < num_seams; ++i {
-        let out = sobel(img)
+        let out = get_energy(img, mask)
         let seam = find_minimum_seam(out)
         out.free()
 
@@ -248,9 +418,16 @@ def remove_the_seams_and_make_it_fun(dir: SeamDirection, img_orig: &Image, num_s
             }
         }
 
-        let seamless = delete_seam(img, seam)
+        let seamless_img = delete_seam(img, seam)
+        img = seamless_img
+
+        if mask? {
+            let seamless_mask = delete_seam(mask, seam)
+            mask.free()
+            mask = seamless_mask
+        }
+
         seam.free()
-        img = seamless
     }
 
     render_image(dir, img, renderer)
@@ -261,8 +438,8 @@ def remove_the_seams_and_make_it_fun(dir: SeamDirection, img_orig: &Image, num_s
     }
 
     return match dir {
-        Vertical => img,
-        Horizontal => {
+        Horizontal => img,
+        Vertical => {
             let new = img.rotate(CounterClockwise)
             img.free()
             yield new

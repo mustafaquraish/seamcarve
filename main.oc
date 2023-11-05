@@ -1,35 +1,81 @@
 import std::image::{Image, Color}
 import std::video_renderer::VideoRenderer
 import std::sdl
-import @seam_carving::{init_seam_carve, remove_the_seams, remove_the_seams_and_make_it_fun, sobel, SeamDirection}
+import @seam_carving::{this, remove_the_seams, add_the_seams, remove_the_seams_and_make_it_fun, Direction}
+
+enum RenderMode {
+    SDL
+    FFMPEG
+    None
+}
+
+enum Operation {
+    AddSeams
+    RemoveSeams
+}
 
 def main(argc: i32, argv: &str) {
     let bouncy: bool = false
-    let fps: u32 = 60
+    let speed_fps: f32 = 60.0
     let filename: str = null
     let out_name: str = "out.mp4"
     let ffmpeg_verbose: bool = false
     let max_seams: u32 = 0
-    let use_ffpmeg: bool = false
+    let explain: bool = false
+
+    let render_mode = RenderMode::SDL
+    let op = Operation::RemoveSeams
 
     let hide_seams_specified: bool = false
     let view_seams_specified: bool = false
+    let inverse_energy: bool = false
 
-    let dir = SeamDirection::Vertical
+    let dir = Direction::Horizontal
     let is_square: bool = false
+    let mask_filename: str = null
+    let percent_change: f32 = -1.0
+    let negative_mask: bool = false
 
     for let i = 1; i < argc as u32; i += 1 {
         match argv[i] {
             "--bouncy" | "-b" => bouncy = true
-            "--fps" => fps = argv[++i].to_u32()
+            "--speed" => speed_fps *= argv[++i].to_f32()
             "--output" | "-o" => out_name = argv[++i]
             "--ffmpeg-verbose" | "-fv" => ffmpeg_verbose = true
             "--num-seams" | "-n" => max_seams = argv[++i].to_u32()
-            "--hide-seams" | "-h" => hide_seams_specified = true
-            "--view-seams" | "-v" => view_seams_specified = true
-            "--ffpmeg" | "-f" => use_ffpmeg = true
-            "--horizontal" | "-hz" => dir = Horizontal
+            "--hide-seams" | "-hs" => hide_seams_specified = true
+            "--view-seams" | "-vs" => view_seams_specified = true
+            "--ffpmeg" | "-f" => render_mode = FFMPEG
+            "--sdl" | "-s" => render_mode = SDL
+            "--add" | "-a" => op = AddSeams
+            "--no-render" | "-nr" => render_mode = None
+            "--mask" | "-m" => mask_filename = argv[++i]
+            "--neg-mask" | "--nmask" | "--negative-mask" | "-nm" => {
+                mask_filename = argv[++i]
+                negative_mask = true
+            }
+            "--axis" => {
+                match argv[++i] {
+                    "horizontal" | "h" | "x" => dir = Horizontal
+                    "vertical" | "v" | "y" => dir = Vertical
+                    else => {
+                        println("Unknown axis: '%s'", argv[i])
+                        std::exit(1)
+                    }
+                }
+            }
+            "--vertical" | "-v" => dir = Vertical
             "--square" | "-sq" => is_square = true
+            "--explain" => explain = true
+            "--inverse" | "-i" | "--fuck-it-up" => inverse_energy = true
+            "--percent" | "-p" => {
+                let pct = argv[++i].to_f32()
+                if pct < 0.0 or pct > 100.0 {
+                    println(`ERROR: Invalid argument to --percent flag: {argv[i]}: Must be between 0 and 100`)
+                    std::exit(0)
+                }
+                percent_change = pct
+            }
             else => {
                 if argv[i][0] == '-' {
                     println("Unknown option: %s", argv[i])
@@ -50,17 +96,50 @@ def main(argc: i32, argv: &str) {
     }
 
     let img = Image::load(filename)
+    let mask = null as &Image
+    
+    if mask_filename? {
+        mask = Image::load(mask_filename)
+        if mask.width != img.width or mask.height != img.height {
+            println(`ERROR: Mask specified does not match image dimensions!`)
+            println(`  Image size: {img.width}, {img.height}`)
+            println(`   Mask size: {mask.width}, {mask.height}`)
+            std::exit(1)
+        }
+
+        for let y = 0; y < mask.height; y += 1 {
+            for let x = 0; x < mask.width; x += 1 {
+                let c = mask.get(x, y)
+                let new_col = if c.r < 100 {
+                    yield Color(128, 128, 128)
+                } else if negative_mask {
+                    yield Color(0, 0, 0)
+                } else {
+                    yield Color(255, 255, 255)
+                }
+                mask.set(x, y, new_col)
+            }
+        }
+
+        mask.save("mask_mod.qoi")
+    }
+
+
     if img.height % 2 != 0 or img.width % 4 != 0 {
         let new_height = img.height - (img.height % 2)
         let new_width = img.width - (img.width % 4)
         let resized = img.resize(new_width, new_height)
         img.free()
         img = resized
+
+        if mask? {
+            let resized = mask.resize(new_width, new_height)
+            mask.free()
+            mask = resized
+        }
     }
 
     println(`Image size: {img.width} x {img.height}`)
-
-    init_seam_carve()
 
     if is_square {
         if img.width > img.height {
@@ -76,9 +155,14 @@ def main(argc: i32, argv: &str) {
     }
 
     if max_seams == 0 {
-        max_seams = match dir {
-            Horizontal => img.height - 2
-            Vertical => img.width - 2
+        let N = match dir {
+            Horizontal => img.width - 2
+            Vertical => img.height - 2
+        }
+        if percent_change > 0.0 {
+            max_seams = (N as f32 * percent_change / 100.0) as u32
+        } else {
+            max_seams = N
         }
     }
 
@@ -90,23 +174,46 @@ def main(argc: i32, argv: &str) {
         show_seams = false
     }
 
-    let renderer = VideoRenderer::create(
-        if use_ffpmeg then FFMPEG else SDL,
-        img.width, 
-        img.height, 
-        fps, 
-        out_name, 
-        ffmpeg_verbose
-    )
+    let screen_width = img.width
+    let screen_height = img.height
 
-    if bouncy {
-        img = remove_the_seams_and_make_it_fun(dir, img, max_seams, show_seams, renderer)
-    } else {
-        img = remove_the_seams(dir, img, max_seams, show_seams, renderer)
+    if op == AddSeams {
+        if dir == Vertical {
+            screen_height += max_seams
+        } else {
+            screen_width += max_seams
+        }
     }
+
+    assert speed_fps > 1.0, "Speed must be greater than 1.0"
+
+    let renderer = match render_mode {
+        None => null as &VideoRenderer
+        else => VideoRenderer::create(
+            if render_mode == FFMPEG then FFMPEG else SDL,
+            screen_width, 
+            screen_height, 
+            speed_fps as u32, 
+            out_name, 
+            ffmpeg_verbose
+        )
+    }
+
+    seam_carving::set_options(inverse_energy: inverse_energy)
+
+    if op == AddSeams {
+        img = add_the_seams(dir, img, mask, max_seams, show_seams, renderer)
+    } else {
+        if bouncy {
+            img = remove_the_seams_and_make_it_fun(dir, img, mask, max_seams, show_seams, renderer)
+        } else {
+            img = remove_the_seams(dir, img, mask, max_seams, show_seams, explain, renderer)
+        }
+    }
+    img.save("output.qoi")
     img.free()
 
-    if renderer.type == SDL {
+    if renderer? and renderer.type == SDL {
         let quit = false
         while not quit {
             let e: sdl::Event
@@ -124,5 +231,5 @@ def main(argc: i32, argv: &str) {
             }
         }
     }
-    renderer.finish()
+    if renderer? then renderer.finish()
 }

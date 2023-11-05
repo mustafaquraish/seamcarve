@@ -1,0 +1,6 @@
+*.qoi
+*.png
+*.jpg
+*.mp4
+out
+out.c
