@@ -1,7 +1,7 @@
 import std::image::{Image, Color}
-import std::heap::Heap 
+import std::heap::Heap
 import std::deque::Deque
-import std::set::Set 
+import std::set::Set
 import std::vector::Vector
 import std::video_renderer::VideoRenderer
 
@@ -46,15 +46,15 @@ def get_energy(img: &Image, mask: &Image): &Image {
             let down = (i+1) % img.height
             let left = (j+img.width-1) % img.width
             let right = (j+1) % img.width
-    
+
             cULR[0] = abs_sub(I[i][right], I[i][left])
             cULR[1] = abs_sub(I[up][j], I[i][left]) + cULR[0]
             cULR[2] = abs_sub(I[up][j], I[i][right]) + cULR[0]
-            
+
             mULR[0] = m[up][j] + cULR[0]
             mULR[1] = m[up][left] + cULR[1]
             mULR[2] = m[up][right] + cULR[2]
-                
+
             let a_min = 0
             let v_min = mULR[0]
             if mULR[1] < v_min { a_min = 1; v_min = mULR[1]; }
@@ -114,7 +114,7 @@ def find_minimum_seam(img: &Image): &Vector<u32> {
                     dp[ix] = 10000
                 }
             }
-        }   
+        }
     }
 
     for let i = 1; i < img.height; ++i {
@@ -122,7 +122,7 @@ def find_minimum_seam(img: &Image): &Vector<u32> {
             let ix = idx(img, j, i)
 
             let j0 = if j == 0 then j else j-1
-            
+
             let amin = j0
             let jmin = dp_get(dp, img, j0, i-1)
 
@@ -183,7 +183,7 @@ def add_seam(img: &Image, seam: &Vector<u32>): &Image {
         let out_x = 0
         for let x = 0; x < img.width; ++x {
 
-            if x == seam_x then { 
+            if x == seam_x then {
                 let r = 0
                 let g = 0
                 let b = 0
@@ -246,19 +246,32 @@ def render_image(dir: Direction, img: &Image, renderer: &VideoRenderer) {
     }
 }
 
-def add_the_seams(dir: Direction, img_orig: &Image, mask_orig: &Image, num_seams: u32, show_seams: bool, renderer: &VideoRenderer = null): &Image {
-    let img = img_orig
-    let mask = mask_orig
+def flip_image_if_needed(dir: Direction, img: &&Image, mask: &&Image) {
+    let img_orig = *img
+    let mask_orig = *mask
 
     if dir == Vertical {
-        img = img_orig.rotate(Clockwise)
+        *img = img_orig.rotate(Clockwise)
         img_orig.free()
 
         if mask_orig? then {
-            mask = mask_orig.rotate(Clockwise)
+            *mask = mask_orig.rotate(Clockwise)
             mask_orig.free()
         }
     }
+}
+
+def unflip_if_needed_and_return(dir: Direction, img: &Image): &Image {
+    if dir == Vertical {
+        let new = img.rotate(CounterClockwise)
+        img.free()
+        return new
+    } else {
+        return img
+    }
+}
+
+def get_list_of_seams(dir: Direction, img: &Image, mask: &Image, num_seams: u32, renderer: &VideoRenderer): &Vector<&Vector<u32>> {
     let tmp_img = img.copy()
 
     let seams_list = Vector<&Vector<u32>>::new()
@@ -283,6 +296,40 @@ def add_the_seams(dir: Direction, img_orig: &Image, mask_orig: &Image, num_seams
     }
 
     tmp_img.free()
+    return seams_list
+}
+
+def draw_the_seams(dir: Direction, img: &Image, mask: &Image, num_seams: u32, renderer: &VideoRenderer = null): &Image {
+    flip_image_if_needed(dir, &img, &mask)
+    let seams_list = get_list_of_seams(dir, img, mask, num_seams, renderer)
+
+    for let i = 0; i < seams_list.size; ++i {
+        let seam = seams_list.at(i)
+        draw_seam_on_image(img, seam)
+        render_image(dir, img, renderer)
+
+        for let j = i + 1; j < seams_list.size; ++j {
+            let other_seam = seams_list.at(j)
+            for let k = 0; k < other_seam.size; ++k {
+                if other_seam.at(k) >= seam.at(k) then {
+                    other_seam.data[k] += 1
+                }
+            }
+        }
+
+        seam.free()
+    }
+
+    seams_list.free()
+    render_image(dir, img, renderer)
+
+    return unflip_if_needed_and_return(dir, img)
+}
+
+
+def add_the_seams(dir: Direction, img: &Image, mask: &Image, num_seams: u32, show_seams: bool, renderer: &VideoRenderer = null): &Image {
+    flip_image_if_needed(dir, &img, &mask)
+    let seams_list = get_list_of_seams(dir, img, mask, num_seams, renderer)
 
     for let i = 0; i < seams_list.size; ++i {
         let seam = seams_list.at(i)
@@ -306,30 +353,12 @@ def add_the_seams(dir: Direction, img_orig: &Image, mask_orig: &Image, num_seams
     seams_list.free()
 
     render_image(dir, img, renderer)
-
-    return match dir {
-        Horizontal => img,
-        Vertical => {
-            let new = img.rotate(CounterClockwise)
-            img.free()
-            yield new
-        }
-    }
+    return unflip_if_needed_and_return(dir, img)
 }
 
-def remove_the_seams(dir: Direction, img_orig: &Image, mask_orig: &Image, num_seams: u32, show_seams: bool, explain: bool, renderer: &VideoRenderer = null): &Image {
-    let img = img_orig
-    let mask = mask_orig
+def remove_the_seams(dir: Direction, img: &Image, mask: &Image, num_seams: u32, show_seams: bool, explain: bool, renderer: &VideoRenderer = null): &Image {
+    flip_image_if_needed(dir, &img, &mask)
 
-    if dir == Vertical {
-        img = img_orig.rotate(Clockwise)
-        img_orig.free()
-
-        if mask_orig? then {
-            mask = mask_orig.rotate(Clockwise)
-            mask_orig.free()
-        }
-    }
     for let i = 0; i < num_seams; ++i {
         let out = get_energy(img, mask)
         let seam = find_minimum_seam(out)
@@ -361,30 +390,12 @@ def remove_the_seams(dir: Direction, img_orig: &Image, mask_orig: &Image, num_se
 
     if mask? then mask.free()
 
-    return match dir {
-        Horizontal => img,
-        Vertical => {
-            let new = img.rotate(CounterClockwise)
-            img.free()
-            yield new
-        }
-    }
+    return unflip_if_needed_and_return(dir, img)
 }
 
-def remove_the_seams_and_make_it_fun(dir: Direction, img_orig: &Image, mask_orig: &Image, num_seams: u32, show_seams: bool, renderer: &VideoRenderer = null): &Image {
-    let img = img_orig
-    let mask = mask_orig
+def remove_the_seams_and_make_it_fun(dir: Direction, img: &Image, mask: &Image, num_seams: u32, show_seams: bool, renderer: &VideoRenderer = null): &Image {
+    flip_image_if_needed(dir, &img, &mask)
 
-    if dir == Vertical {
-        img = img_orig.rotate(Clockwise)
-        img_orig.free()
-
-        if mask_orig? then {
-            mask = mask_orig.rotate(Clockwise)
-            mask_orig.free()
-        }
-    }
-    
     let backlog = Deque<&Image>::new()
     let backlog_counter = img.width/5
     let max_backlog = 500
@@ -433,18 +444,10 @@ def remove_the_seams_and_make_it_fun(dir: Direction, img_orig: &Image, mask_orig
     render_image(dir, img, renderer)
 
     for let i = 0; i < backlog.size; ++i {
-        let img = backlog.at(i)
-        img.free()
+        backlog.at(i).free()
     }
 
-    return match dir {
-        Horizontal => img,
-        Vertical => {
-            let new = img.rotate(CounterClockwise)
-            img.free()
-            yield new
-        }
-    }
+    return unflip_if_needed_and_return(dir, img)
 }
 
 

@@ -1,7 +1,7 @@
 import std::image::{Image, Color}
 import std::video_renderer::VideoRenderer
 import std::sdl
-import @seam_carving::{this, remove_the_seams, add_the_seams, remove_the_seams_and_make_it_fun, Direction}
+import @seam_carving::{this, remove_the_seams, draw_the_seams, add_the_seams, remove_the_seams_and_make_it_fun, Direction}
 
 enum RenderMode {
     SDL
@@ -12,6 +12,7 @@ enum RenderMode {
 enum Operation {
     AddSeams
     RemoveSeams
+    DrawSeams
 }
 
 def main(argc: i32, argv: &str) {
@@ -48,6 +49,7 @@ def main(argc: i32, argv: &str) {
             "--ffpmeg" | "-f" => render_mode = FFMPEG
             "--sdl" | "-s" => render_mode = SDL
             "--add" | "-a" => op = AddSeams
+            "--draw" | "-d" => op = DrawSeams
             "--no-render" | "-nr" => render_mode = None
             "--mask" | "-m" => mask_filename = argv[++i]
             "--neg-mask" | "--nmask" | "--negative-mask" | "-nm" => {
@@ -97,7 +99,7 @@ def main(argc: i32, argv: &str) {
 
     let img = Image::load(filename)
     let mask = null as &Image
-    
+
     if mask_filename? {
         mask = Image::load(mask_filename)
         if mask.width != img.width or mask.height != img.height {
@@ -120,8 +122,6 @@ def main(argc: i32, argv: &str) {
                 mask.set(x, y, new_col)
             }
         }
-
-        mask.save("mask_mod.qoi")
     }
 
 
@@ -169,7 +169,7 @@ def main(argc: i32, argv: &str) {
     let show_seams: bool = not bouncy
     if view_seams_specified {
         show_seams = true
-    } 
+    }
     if hide_seams_specified {
         show_seams = false
     }
@@ -191,25 +191,28 @@ def main(argc: i32, argv: &str) {
         None => null as &VideoRenderer
         else => VideoRenderer::create(
             if render_mode == FFMPEG then FFMPEG else SDL,
-            screen_width, 
-            screen_height, 
-            speed_fps as u32, 
-            out_name, 
+            screen_width,
+            screen_height,
+            speed_fps as u32,
+            out_name,
             ffmpeg_verbose
         )
     }
 
     seam_carving::set_options(inverse_energy: inverse_energy)
 
-    if op == AddSeams {
-        img = add_the_seams(dir, img, mask, max_seams, show_seams, renderer)
-    } else {
-        if bouncy {
-            img = remove_the_seams_and_make_it_fun(dir, img, mask, max_seams, show_seams, renderer)
-        } else {
-            img = remove_the_seams(dir, img, mask, max_seams, show_seams, explain, renderer)
+    match op {
+        AddSeams => img = add_the_seams(dir, img, mask, max_seams, show_seams, renderer)
+        DrawSeams => img = draw_the_seams(dir, img, mask, max_seams, renderer)
+        RemoveSeams => {
+            if bouncy {
+                img = remove_the_seams_and_make_it_fun(dir, img, mask, max_seams, show_seams, renderer)
+            } else {
+                img = remove_the_seams(dir, img, mask, max_seams, show_seams, explain, renderer)
+            }
         }
     }
+
     img.save("output.qoi")
     img.free()
 
