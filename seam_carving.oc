@@ -3,6 +3,7 @@ import std::heap::Heap
 import std::deque::Deque
 import std::set::Set
 import std::vector::Vector
+import std::mem
 import std::video_renderer::VideoRenderer
 
 @compiler c_flag "-O3"
@@ -20,9 +21,9 @@ def set_options(inverse_energy: bool) {
 def get_energy(img: &Image, mask: &Image): &Image {
     let out = Image::new(img.width, img.height)
 
-    let m = std::new<u32>(img.width * img.height) as &[u32; img.width]
-    let energy = std::new<u32>(img.width * img.height) as &[u32; img.width]
-    let I = std::new<u32>(img.width * img.height) as &[u32; img.width]
+    let m = mem::alloc<u32>(img.width * img.height) as &[u32; img.width]
+    let energy = mem::alloc<u32>(img.width * img.height) as &[u32; img.width]
+    let I = mem::alloc<u32>(img.width * img.height) as &[u32; img.width]
     defer std::libc::free(m)
     defer std::libc::free(energy)
     defer std::libc::free(I)
@@ -96,8 +97,8 @@ def dp_get(dp: &i32, img: &Image, x: u32, y: u32): i32 {
 def find_minimum_seam(img: &Image): &Vector<u32> {
     let seam = Vector<u32>::new()
 
-    let dp = std::new<i32>(img.width * img.height)
-    let backtrack = std::new<u32>(img.width * img.height)
+    let dp = mem::alloc<i32>(img.width * img.height)
+    let backtrack = mem::alloc<u32>(img.width * img.height)
     defer std::libc::free(dp)
     defer std::libc::free(backtrack)
 

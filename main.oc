@@ -15,6 +15,32 @@ enum Operation {
     DrawSeams
 }
 
+def usage(code: i32) {
+    println("Usage: seam_carving [options] <filename>")
+    println("Options:")
+    println("  -b, --bouncy: Make the seams bounce around")
+    println("  --speed <fps>: Set the speed of the animation (default: 60)")
+    println("  -o, --output <filename>: Set the output filename (default: out.mp4)")
+    println("  -fv, --ffmpeg-verbose: Print ffmpeg output")
+    println("  -n, --num-seams <n>: Set the number of seams to remove (default: all)")
+    println("  -hs, --hide-seams: Hide the seams")
+    println("  -vs, --view-seams: Show the seams (default)")
+    println("  -f, --ffmpeg: Render using ffmpeg")
+    println("  -s, --sdl: Render using SDL (default)")
+    println("  -a, --add: Add seams instead of removing them")
+    println("  -d, --draw: Draw all the seams")
+    println("  -nr, --no-render: Don't render the video")
+    println("  -m, --mask <filename>: Use a mask to specify which pixels to remove")
+    println("  -nm, --neg-mask: Use a mask to specify which pixels to keep")
+    println("  --axis <axis>: Set the axis to remove seams from (default: horizontal)")
+    println("  -v, --vertical: Set the axis to vertical")
+    println("  -sq, --square: Make the image square")
+    println("  --explain: Explain what's going on")
+    println("  -i, --inverse: Use inverse energy")
+    println("  -p, --percent <n>: Set the number of seams to remove as a percentage of the image size")
+    std::exit(code)
+}
+
 def main(argc: i32, argv: &str) {
     let bouncy: bool = false
     let speed_fps: f32 = 60.0
@@ -78,6 +104,7 @@ def main(argc: i32, argv: &str) {
                 }
                 percent_change = pct
             }
+            "--help" => usage(0)
             else => {
                 if argv[i][0] == '-' {
                     println("Unknown option: %s", argv[i])
@@ -86,7 +113,7 @@ def main(argc: i32, argv: &str) {
                     filename = argv[i]
                 } else {
                     println("Unknown option/argument: '%s'", argv[i])
-                    std::exit(1)
+                    usage(1)
                 }
             }
         }
